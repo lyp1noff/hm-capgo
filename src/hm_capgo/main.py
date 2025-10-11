@@ -1,27 +1,115 @@
-from fastapi import FastAPI, Request
-from pydantic import BaseModel
 from datetime import datetime, UTC
 
-app = FastAPI()
+from fastapi import FastAPI, Depends, HTTPException, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-class CapgoStats(BaseModel):
-    action: str
-    app_id: str
-    device_id: str
-    platform: str | None = None
-    version_name: str | None = None
-    version_build: str | None = None
-    version_code: str | None = None
-    version_os: str | None = None
-    plugin_version: str | None = None
-    is_emulator: bool | None = None
-    is_prod: bool | None = None
+from .database import get_session
+from .models import Version, Device, Stat
+from .schemas import UpdateRequest, UpdateResponse, CapgoStats, ChannelRequest, ChannelResponse, AddVersionResponse, \
+    AddVersionRequest
 
-@app.post("/capgo/stats")
-async def receive_stats(stats: CapgoStats, request: Request):
-    ip = request.client.host
-    ts = datetime.now(UTC).isoformat()
+IGNORED_ACTION_PREFIXES = ["download_", "app_moved_to"]
+app = FastAPI(root_path="/capgo")
 
-    print(f"[{ts}] From {ip}: {stats.action} {stats.version_name} {stats.device_id}")
 
+@app.post("/admin/version", response_model=AddVersionResponse)
+async def add_version(req: AddVersionRequest, session: AsyncSession = Depends(get_session)):
+    v = Version(
+        version=req.version,
+        url=req.url,
+        checksum=req.checksum,
+        channel=req.channel,
+        active=req.active
+    )
+    session.add(v)
+    await session.commit()
+    return AddVersionResponse(status="ok", version=v.version, channel=v.channel)
+
+
+@app.post("/update", response_model=UpdateResponse)
+async def get_update(req: UpdateRequest, session: AsyncSession = Depends(get_session)):
+    result = await session.execute(
+        select(Device).where(Device.device_id == req.device_id, Device.app_id == req.app_id)
+    )
+    device = result.scalar_one_or_none()
+
+    if not device:
+        device = Device(device_id=req.device_id, app_id=req.app_id)
+        session.add(device)
+        await session.commit()
+        await session.refresh(device)
+
+    version = await session.scalar(
+        select(Version)
+        .where(Version.channel == device.channel, Version.active == 1)
+        .order_by(Version.created_at.desc())
+        .limit(1)
+    )
+    if not version:
+        raise HTTPException(status_code=404, detail="No update available")
+
+    return UpdateResponse(version=version.version, url=version.url, checksum=version.checksum)
+
+
+@app.post("/stats")
+async def receive_stats(stats: CapgoStats, request: Request, session: AsyncSession = Depends(get_session)):
+    if any(stats.action.startswith(prefix) for prefix in IGNORED_ACTION_PREFIXES) and stats.action != "download_failed":
+        print(f"[SKIP] {stats.device_id} {stats.version_name} {stats.action}")
+        return {"status": "skipped"}
+
+    entry = Stat(
+        action=stats.action,
+        app_id=stats.app_id,
+        device_id=stats.device_id,
+        custom_id=stats.custom_id,
+        platform=stats.platform,
+        version_name=stats.version_name,
+        version_build=stats.version_build,
+        version_code=stats.version_code,
+        version_os=stats.version_os,
+    )
+    session.add(entry)
+    await session.commit()
+    print(
+        f"[{datetime.now(UTC).isoformat()}] {request.client.host}: {stats.device_id} {stats.version_name} {stats.action}")
     return {"status": "ok"}
+
+
+@app.get("/channel_self", response_model=ChannelResponse)
+async def get_channel(device_id: str, app_id: str, session: AsyncSession = Depends(get_session)):
+    result = await session.execute(
+        select(Device).where(Device.device_id == device_id, Device.app_id == app_id)
+    )
+    device = result.scalar_one_or_none()
+    channel = device.channel if device else "production"
+    return ChannelResponse(status="ok", channel=channel, allowSet=True)
+
+
+@app.post("/channel_self", response_model=ChannelResponse)
+async def set_channel(req: ChannelRequest, session: AsyncSession = Depends(get_session)):
+    if not req.channel:
+        return ChannelResponse(status="error", error="Channel not specified")
+    result = await session.execute(
+        select(Device).where(Device.device_id == req.device_id, Device.app_id == req.app_id)
+    )
+    device = result.scalar_one_or_none()
+    if not device:
+        device = Device(device_id=req.device_id, app_id=req.app_id, channel=req.channel)
+        session.add(device)
+    else:
+        device.channel = req.channel
+    await session.commit()
+    return ChannelResponse(status="ok", message="Channel set", channel=req.channel)
+
+
+@app.delete("/channel_self", response_model=ChannelResponse)
+async def unset_channel(req: ChannelRequest, session: AsyncSession = Depends(get_session)):
+    result = await session.execute(
+        select(Device).where(Device.device_id == req.device_id, Device.app_id == req.app_id)
+    )
+    device = result.scalar_one_or_none()
+    if device:
+        device.channel = "production"
+        await session.commit()
+    return ChannelResponse(status="ok", message="Channel unset", channel="production")
