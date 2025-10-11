@@ -27,9 +27,9 @@ class UpdateRequest(BaseModel):
 
 
 class UpdateResponse(BaseModel):
-    version: str
-    url: str
-    checksum: str
+    version: Optional[str] = None
+    url: Optional[str] = None
+    checksum: Optional[str] = None
 
 
 class CapgoStats(BaseModel):

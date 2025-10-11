@@ -47,7 +47,7 @@ async def get_update(req: UpdateRequest, session: AsyncSession = Depends(get_ses
         .limit(1)
     )
     if not version or version.version == req.version_name:
-        return UpdateResponse(version="", url="", checksum="")
+        return UpdateResponse()
 
     return UpdateResponse(version=version.version, url=version.url, checksum=version.checksum)
 
