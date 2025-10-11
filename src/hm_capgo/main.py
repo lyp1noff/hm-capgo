@@ -46,8 +46,8 @@ async def get_update(req: UpdateRequest, session: AsyncSession = Depends(get_ses
         .order_by(Version.created_at.desc())
         .limit(1)
     )
-    if not version:
-        raise HTTPException(status_code=404, detail="No update available")
+    if not version or version.version == req.version_name:
+        return UpdateResponse(version="", url="", checksum="")
 
     return UpdateResponse(version=version.version, url=version.url, checksum=version.checksum)
 
@@ -76,14 +76,29 @@ async def receive_stats(stats: CapgoStats, request: Request, session: AsyncSessi
     return {"status": "ok"}
 
 
-@app.get("/channel_self", response_model=ChannelResponse)
-async def get_channel(device_id: str, app_id: str, session: AsyncSession = Depends(get_session)):
+@app.put("/channel_self", response_model=ChannelResponse)
+async def put_channel(req: Request, session: AsyncSession = Depends(get_session)):
+    data = await req.json()
+    device_id = data.get("device_id")
+    app_id = data.get("app_id")
+
+    if not device_id or not app_id:
+        return ChannelResponse(status="default", channel="production", allowSet=True)
+
     result = await session.execute(
         select(Device).where(Device.device_id == device_id, Device.app_id == app_id)
     )
     device = result.scalar_one_or_none()
-    channel = device.channel if device else "production"
-    return ChannelResponse(status="ok", channel=channel, allowSet=True)
+
+    if not device:
+        device = Device(device_id=device_id, app_id=app_id, channel="production")
+        session.add(device)
+        await session.commit()
+        await session.refresh(device)
+
+    status = "override" if device.channel != "production" else "default"
+
+    return ChannelResponse(status=status, channel=device.channel, allowSet=True)
 
 
 @app.post("/channel_self", response_model=ChannelResponse)

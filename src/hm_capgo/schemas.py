@@ -54,5 +54,5 @@ class ChannelResponse(BaseModel):
     status: str
     channel: Optional[str] = None
     allowSet: Optional[bool] = True
-    message: Optional[str] = ""
-    error: Optional[str] = ""
+    message: Optional[str] = None
+    error: Optional[str] = None
