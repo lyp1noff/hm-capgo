@@ -22,6 +22,28 @@ dependencies = [
 packages = [{include = "hm_capgo", from = "src"}]
 
 
+[tool.poetry.group.dev.dependencies]
+black = "^25.9.0"
+isort = "^7.0.0"
+flake8 = "^7.3.0"
+mypy = "^1.18.2"
+
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 120
+target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+show_error_codes = true
+plugins = ["sqlalchemy.ext.mypy.plugin"]
+exclude = ["tests", "scripts", "alembic"]

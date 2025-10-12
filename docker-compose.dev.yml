@@ -1,0 +1,11 @@
+services:
+  app:
+    build: !override
+      context: .
+    image: capgo-app:latest
+    pull_policy: build
+    ports: !override
+      - "8010:8000"
+  db:
+    ports: !override
+      - "5432:5432"
