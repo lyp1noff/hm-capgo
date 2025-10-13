@@ -10,12 +10,12 @@ from ..schemas import CapgoStats
 
 router = APIRouter(tags=["stats"])
 
-IGNORED_ACTION_PREFIXES = ["download_", "app_moved_to"]
-
 
 @router.post("/stats")
 async def receive_stats(stats: CapgoStats, request: Request, db: AsyncSession = Depends(get_session)) -> dict[str, str]:
-    if any(stats.action.startswith(p) for p in IGNORED_ACTION_PREFIXES) and stats.action != "download_failed":
+    if stats.action not in {"download_failed", "download_complete"} and stats.action.startswith(
+        ("download_", "app_moved_to")
+    ):
         logger.info(f"[SKIP] {stats.device_id} {stats.version_name} {stats.action}")
         return {"status": "skipped"}
 
