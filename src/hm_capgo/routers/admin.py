@@ -1,14 +1,25 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import desc, select
+from sqlalchemy import case, desc, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import verify_admin
 from ..database import get_session
 from ..devices import device_channel, device_is_prod
-from ..models import Device, Version
-from ..schemas import AddVersionRequest, AddVersionResponse, DeviceInfo, PatchVersionRequest, VersionInfo
+from ..models import Device, Stat, Version
+from ..schemas import (
+    AddVersionRequest,
+    AddVersionResponse,
+    DeviceGroup,
+    DeviceInfo,
+    EventGroup,
+    PatchVersionRequest,
+    StatsSummary,
+    VersionInfo,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -147,3 +158,41 @@ async def get_devices(
         )
         for d in result.scalars().all()
     ]
+
+
+@router.get("/stats", response_model=StatsSummary)
+async def get_stats(
+    days: int = 7,
+    db: AsyncSession = Depends(get_session),
+    _: str = Depends(verify_admin),
+) -> StatsSummary:
+    """How updates go for the last days: devices by channel, native build and bundle, and updater events by bundle."""
+    days = max(1, min(days, 365))
+    since = func.now() - timedelta(days=days)
+
+    channel = func.coalesce(Device.channel, case((Device.is_prod == 0, "test"), else_="production"))
+    device_rows = await db.execute(
+        select(channel, Device.version_build, Device.version_name, func.count())
+        .where(Device.last_seen > since)
+        .group_by(channel, Device.version_build, Device.version_name)
+        .order_by(func.count().desc())
+    )
+    devices = [
+        DeviceGroup(channel=row[0], version_build=row[1], version_name=row[2], devices=row[3]) for row in device_rows
+    ]
+
+    event_rows = await db.execute(
+        select(Stat.version_name, Stat.action, func.count(), func.count(distinct(Stat.device_id)))
+        .where(Stat.ts > since)
+        .group_by(Stat.version_name, Stat.action)
+        .order_by(Stat.version_name.desc(), func.count().desc())
+    )
+    events = [EventGroup(version_name=row[0], action=row[1], events=row[2], devices=row[3]) for row in event_rows]
+
+    return StatsSummary(
+        days=days,
+        active_devices=sum(group.devices for group in devices),
+        failures=sum(group.events for group in events if group.action.endswith("_fail")),
+        devices=devices,
+        events=events,
+    )

@@ -92,3 +92,25 @@ class ChannelResponse(BaseModel):
     allowSet: Optional[bool] = True
     message: Optional[str] = None
     error: Optional[str] = None
+
+
+class DeviceGroup(BaseModel):
+    channel: str
+    version_build: Optional[str] = None
+    version_name: Optional[str] = None
+    devices: int
+
+
+class EventGroup(BaseModel):
+    version_name: Optional[str] = None
+    action: str
+    events: int
+    devices: int
+
+
+class StatsSummary(BaseModel):
+    days: int
+    active_devices: int
+    failures: int
+    devices: list[DeviceGroup]
+    events: list[EventGroup]
