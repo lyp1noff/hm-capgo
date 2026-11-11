@@ -6,7 +6,8 @@ from sqlalchemy.orm import declarative_base
 
 from .config import SQLALCHEMY_DATABASE_URL
 
-engine: AsyncEngine = create_async_engine(SQLALCHEMY_DATABASE_URL, echo=False)
+# pre_ping: after a database restart the pool would hand out dead connections and the next request fails with 500.
+engine: AsyncEngine = create_async_engine(SQLALCHEMY_DATABASE_URL, echo=False, pool_pre_ping=True)
 
 SessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
     bind=engine,
