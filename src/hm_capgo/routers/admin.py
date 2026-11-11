@@ -6,10 +6,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import verify_admin
 from ..database import get_session
-from ..models import Version
-from ..schemas import AddVersionRequest, AddVersionResponse, UpdateResponse
+from ..devices import device_channel, device_is_prod
+from ..models import Device, Version
+from ..schemas import AddVersionRequest, AddVersionResponse, DeviceInfo, PatchVersionRequest, VersionInfo
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+def version_info(v: Version) -> VersionInfo:
+    return VersionInfo(
+        version=str(v.version),
+        url=str(v.url),
+        checksum=str(v.checksum),
+        native=v.native,
+        channel=v.channel,
+        active=bool(v.active),
+        created_at=v.created_at,
+    )
+
+
+async def find_version(db: AsyncSession, version: str, channel: str) -> Version:
+    v = await db.scalar(select(Version).where(Version.version == version, Version.channel == channel))
+    if v is None:
+        raise HTTPException(status_code=404, detail=f"Version '{version}' not found in channel '{channel}'")
+    return v
 
 
 @router.post("/version", response_model=AddVersionResponse)
@@ -19,13 +39,12 @@ async def add_version(
     _: str = Depends(verify_admin),
 ) -> AddVersionResponse:
     """Add a new version if it doesn't already exist for the same channel."""
-    result = await db.execute(
+    existing = await db.scalar(
         select(Version).where(
             Version.version == req.version,
             Version.channel == req.channel,
         )
     )
-    existing = result.scalar_one_or_none()
     if existing is not None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -36,6 +55,7 @@ async def add_version(
         version=req.version,
         url=req.url,
         checksum=req.checksum,
+        native=req.native,
         channel=req.channel,
         active=int(req.active),
     )
@@ -46,68 +66,84 @@ async def add_version(
     return AddVersionResponse(status="ok", version=str(v.version), channel=str(v.channel))
 
 
-@router.get("/version", response_model=list[UpdateResponse])
+@router.get("/version", response_model=list[VersionInfo])
 async def get_versions(
     channel: str | None = None,
+    native: str | None = None,
     db: AsyncSession = Depends(get_session),
     _: str = Depends(verify_admin),
-) -> list[UpdateResponse]:
-    """Return all versions, optionally filtered by channel."""
-    query = select(Version).order_by(desc(Version.created_at))
+) -> list[VersionInfo]:
+    """Return all versions, newest first, optionally filtered by channel and native build."""
+    query = select(Version).order_by(desc(Version.created_at), desc(Version.id))
     if channel:
         query = query.where(Version.channel == channel)
+    if native:
+        query = query.where(Version.native == native)
 
     result = await db.execute(query)
-    versions = result.scalars().all()
-
-    return [
-        UpdateResponse(
-            version=str(v.version),
-            url=str(v.url),
-            checksum=str(v.checksum),
-        )
-        for v in versions
-    ]
+    return [version_info(v) for v in result.scalars().all()]
 
 
-@router.patch("/version/{version}", response_model=AddVersionResponse)
-async def update_version_status(
+@router.patch("/version/{version}", response_model=VersionInfo)
+async def update_version(
     version: str,
-    req: AddVersionRequest,
+    req: PatchVersionRequest,
+    channel: str = "production",
     db: AsyncSession = Depends(get_session),
     _: str = Depends(verify_admin),
-) -> AddVersionResponse:
-    """Update existing version parameters manually."""
-    result = await db.execute(select(Version).where(Version.version == version))
-    v = result.scalar_one_or_none()
+) -> VersionInfo:
+    """Change a version; {"active": false} takes it back, and devices move to the previous one."""
+    v = await find_version(db, version, channel)
 
-    if v is None:
-        raise HTTPException(status_code=404, detail=f"Version '{version}' not found")
-
-    v.url = req.url
-    v.checksum = req.checksum
-    v.channel = req.channel
-    v.active = int(req.active)
+    if req.url is not None:
+        v.url = req.url
+    if req.checksum is not None:
+        v.checksum = req.checksum
+    if req.native is not None:
+        v.native = req.native
+    if req.active is not None:
+        v.active = int(req.active)
     await db.commit()
     await db.refresh(v)
 
-    return AddVersionResponse(status="ok", version=str(v.version), channel=str(v.channel))
+    return version_info(v)
 
 
 @router.delete("/version/{version}", response_model=AddVersionResponse)
 async def delete_version(
     version: str,
+    channel: str = "production",
     db: AsyncSession = Depends(get_session),
     _: str = Depends(verify_admin),
 ) -> AddVersionResponse:
     """Delete version record."""
-    result = await db.execute(select(Version).where(Version.version == version))
-    v = result.scalar_one_or_none()
-
-    if v is None:
-        raise HTTPException(status_code=404, detail=f"Version '{version}' not found")
+    v = await find_version(db, version, channel)
 
     await db.delete(v)
     await db.commit()
 
     return AddVersionResponse(status="deleted", version=str(v.version), channel=str(v.channel))
+
+
+@router.get("/devices", response_model=list[DeviceInfo])
+async def get_devices(
+    limit: int = 50,
+    db: AsyncSession = Depends(get_session),
+    _: str = Depends(verify_admin),
+) -> list[DeviceInfo]:
+    """The devices seen last, with the channel and bundle each one reported."""
+    result = await db.execute(select(Device).order_by(desc(Device.last_seen)).limit(min(limit, 500)))
+
+    return [
+        DeviceInfo(
+            device_id=str(d.device_id),
+            app_id=str(d.app_id),
+            channel=device_channel(d),
+            channel_override=bool(d.channel),
+            is_prod=device_is_prod(d),
+            version_build=d.version_build,
+            version_name=d.version_name,
+            last_seen=d.last_seen,
+        )
+        for d in result.scalars().all()
+    ]

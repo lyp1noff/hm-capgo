@@ -13,6 +13,9 @@ class Version(Base):
     checksum = Column(String, nullable=False)
     channel = Column(String, default="production")
     active = Column(Integer, default=1)  # bool, но можно хранить int(0/1)
+    # The native build the bundle fits: the app's CapacitorUpdater.version (version_build in requests).
+    # Rows without it are never served.
+    native = Column(String, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
 
 
@@ -22,7 +25,11 @@ class Device(Base):
     id = Column(Integer, primary_key=True)
     device_id = Column(String, nullable=False)
     app_id = Column(String, nullable=False)
-    channel = Column(String, default="production")
+    # A channel chosen on the device; without it the channel follows the install: App Store or TestFlight.
+    channel = Column(String, nullable=True)
+    is_prod = Column(Integer, nullable=True)
+    version_build = Column(String, nullable=True)
+    version_name = Column(String, nullable=True)
     last_seen = Column(DateTime, server_default=func.now())
 
 
